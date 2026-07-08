@@ -1,0 +1,37 @@
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n-veille-emploi
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # --- Configuration serveur n8n ---
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678/}
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-Europe/Paris}
+      - TZ=${GENERIC_TIMEZONE:-Europe/Paris}
+      # Clé de chiffrement des credentials (obligatoire, à définir dans .env)
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      # Cookie sécurisé désactivé pour un accès local en http://
+      - N8N_SECURE_COOKIE=false
+      - N8N_RUNNERS_ENABLED=true
+      # Autorise la lecture des variables d'environnement via {{ $env.XXX }}
+      # dans les nœuds (bloqué par défaut par n8n).
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+
+      # --- Variables métier, lues dans le workflow via {{ $env.XXX }} ---
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
+      - NOTIFICATION_EMAIL=${NOTIFICATION_EMAIL}
+      - GMAIL_SEARCH_QUERY=${GMAIL_SEARCH_QUERY}
+    volumes:
+      # Volume persistant : credentials, workflows importés, historique de dédup
+      - n8n_data:/home/node/.n8n
+      # Dossier des workflows monté en lecture, pour l'import via CLI
+      - ./workflows:/workflows
+
+volumes:
+  n8n_data:

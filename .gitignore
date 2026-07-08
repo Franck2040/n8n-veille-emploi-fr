@@ -1,0 +1,15 @@
+# Secrets — ne jamais committer
+.env
+
+# Dépendances Node (scripts d'aide)
+node_modules/
+npm-debug.log*
+
+# Divers OS / éditeurs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Fichiers temporaires de fusion/export workflow
+workflows/_*.json

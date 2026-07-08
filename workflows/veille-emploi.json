@@ -1,0 +1,268 @@
+{
+  "id": "veille-emploi-fr",
+  "name": "Veille Emploi FR",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Veille Emploi FR\nFlux : e-mail d'alerte → extraction IA (Gemini) → structuration → déduplication → Notion → notification.\n\nLes valeurs sensibles ne sont **jamais** en dur : elles viennent des credentials n8n et des variables `{{ $env.XXX }}` définies dans `.env`.\n\nLe nœud *Structurer l'offre* tolère les champs manquants ; Gemini et Notion réessaient en cas d'erreur passagère.",
+        "height": 240,
+        "width": 380,
+        "color": 4
+      },
+      "id": "sticky-intro",
+      "name": "Note - Vue d'ensemble",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-360, -20]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "={{ $env.GMAIL_SEARCH_QUERY || '' }}"
+        },
+        "options": {}
+      },
+      "id": "node-gmail-trigger",
+      "name": "Gmail - Alerte Emploi",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [-40, 200],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REMPLACER_PAR_ID_CREDENTIAL",
+          "name": "Gmail - Alerte Emploi"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// On récupère le sujet et le corps texte du mail d'alerte.\n// Selon la source, le corps peut être dans `text`, `snippet` ou `html`.\nconst subject = $json.subject || '';\nconst body = $json.text || $json.snippet || $json.html || '';\n\n// Prompt d'extraction : on demande explicitement un JSON strict, sans texte autour.\nconst prompt = `Tu es un assistant qui extrait les informations d'une offre d'emploi à partir d'un e-mail d'alerte.\nÀ partir du sujet et du corps ci-dessous, renvoie UNIQUEMENT un objet JSON valide, sans aucun texte autour, avec ces clés :\n- \"intitule\" : l'intitulé du poste (string)\n- \"entreprise\" : le nom de l'entreprise (string, \"\" si absent)\n- \"lieu\" : la ville ou la région (string, \"\" si absent)\n- \"lien\" : l'URL directe vers l'offre (string, \"\" si absent)\n\nSujet : ${subject}\n\nCorps :\n${body}`;\n\n// Corps de la requête envoyée à l'API Gemini.\n// responseSchema force un retour JSON structuré et fiable.\nconst geminiBody = {\n  contents: [{ parts: [{ text: prompt }] }],\n  generationConfig: {\n    responseMimeType: 'application/json',\n    responseSchema: {\n      type: 'OBJECT',\n      properties: {\n        intitule: { type: 'STRING' },\n        entreprise: { type: 'STRING' },\n        lieu: { type: 'STRING' },\n        lien: { type: 'STRING' }\n      },\n      required: ['intitule']\n    }\n  }\n};\n\nreturn { geminiBody };"
+      },
+      "id": "node-prep-gemini",
+      "name": "Préparer la requête Gemini",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://generativelanguage.googleapis.com/v1beta/models/' + ($env.GEMINI_MODEL || 'gemini-2.5-flash') + ':generateContent' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.geminiBody }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "node-http-gemini",
+      "name": "Extraction IA (Gemini)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 200],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REMPLACER_PAR_ID_CREDENTIAL",
+          "name": "Gemini API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// --- Structuration tolérante aux pannes ---\n// Gemini renvoie normalement le JSON dans candidates[0].content.parts[].text\nconst parts = $json?.candidates?.[0]?.content?.parts || [];\nlet raw = parts.map(p => p.text || '').join('').trim();\n\n// Nettoyage : Gemini entoure parfois le JSON de ```json ... ```\nraw = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();\n\n// Parse tolérant : si le JSON est illisible, on ne casse pas le flux.\nlet offre = {};\ntry {\n  offre = JSON.parse(raw);\n} catch (e) {\n  offre = {};\n}\n\n// On récupère le mail d'origine pour compléter d'éventuels champs manquants.\nlet email = {};\ntry { email = $('Gmail - Alerte Emploi').item.json; } catch (e) { email = {}; }\nconst emailText = [email.text, email.html, email.snippet, email.subject].filter(Boolean).join('\\n');\n\n// Normalise une URL : renvoie une vraie http(s) ou null (jamais \"\").\nfunction cleanUrl(u) {\n  if (typeof u === 'string') {\n    const m = u.match(/https?:\\/\\/[^\\s\"'<>()]+/i);\n    if (m) return m[0];\n  }\n  return null;\n}\n\n// Lien : celui de Gemini, sinon le 1er lien trouvé dans le mail, sinon null.\nlet lien = cleanUrl(offre.lien);\nif (!lien) lien = cleanUrl(emailText);\n\n// Intitulé : celui de Gemini, sinon le sujet du mail, sinon un libellé de secours.\nconst intitule = (offre.intitule || email.subject || 'Offre sans intitulé').toString().trim();\n\nreturn {\n  intitule,\n  entreprise: (offre.entreprise || '').toString().trim(),\n  lieu: (offre.lieu || '').toString().trim(),\n  lien: lien,            // null si aucun lien valide -> accepté par Notion\n  recupere_le: new Date().toISOString()\n};"
+      },
+      "id": "node-structure",
+      "name": "Structurer l'offre",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [740, 200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Déduplication persistée entre exécutions.\n// On mémorise les liens (ou intitulés) déjà traités dans le stockage statique du workflow.\n// Les offres déjà vues sont écartées ; seules les nouvelles passent à la suite.\nconst staticData = $getWorkflowStaticData('global');\nstaticData.seen = staticData.seen || [];\n\nconst nouvelles = [];\nfor (const item of $input.all()) {\n  const cle = item.json.lien || item.json.intitule;\n  if (!cle) { continue; }\n  if (!staticData.seen.includes(cle)) {\n    staticData.seen.push(cle);\n    nouvelles.push(item);\n  }\n}\n\n// Optionnel : on borne l'historique pour éviter qu'il grossisse indéfiniment.\nif (staticData.seen.length > 5000) {\n  staticData.seen = staticData.seen.slice(-5000);\n}\n\nreturn nouvelles;"
+      },
+      "id": "node-dedup",
+      "name": "Dédupliquer (liens déjà vus)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "create",
+        "databaseId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.NOTION_DATABASE_ID }}"
+        },
+        "title": "={{ $json.intitule }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Entreprise|rich_text",
+              "textContent": "={{ $json.entreprise }}"
+            },
+            {
+              "key": "Lieu|rich_text",
+              "textContent": "={{ $json.lieu }}"
+            },
+            {
+              "key": "Lien|url",
+              "urlValue": "={{ $json.lien || null }}"
+            },
+            {
+              "key": "Date d'ajout|date",
+              "date": "={{ $json.recupere_le }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-notion-create",
+      "name": "Enregistrer dans Notion",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [1260, 200],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "notionApi": {
+          "id": "REMPLACER_PAR_ID_CREDENTIAL",
+          "name": "Notion - Veille Emploi"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $env.NOTIFICATION_EMAIL }}",
+        "subject": "={{ '📌 Nouvelle offre repérée : ' + $('Dédupliquer (liens déjà vus)').item.json.intitule }}",
+        "emailType": "text",
+        "message": "={{ 'Intitulé : ' + $('Dédupliquer (liens déjà vus)').item.json.intitule + '\\nEntreprise : ' + ($('Dédupliquer (liens déjà vus)').item.json.entreprise || '—') + '\\nLieu : ' + ($('Dédupliquer (liens déjà vus)').item.json.lieu || '—') + '\\nLien : ' + ($('Dédupliquer (liens déjà vus)').item.json.lien || '—') + '\\n\\nAjoutée à ta base Notion le ' + $('Dédupliquer (liens déjà vus)').item.json.recupere_le }}",
+        "options": {}
+      },
+      "id": "node-notify",
+      "name": "Notifier par e-mail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1520, 200],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REMPLACER_PAR_ID_CREDENTIAL",
+          "name": "Gmail - Alerte Emploi"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail - Alerte Emploi": {
+      "main": [
+        [
+          {
+            "node": "Préparer la requête Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer la requête Gemini": {
+      "main": [
+        [
+          {
+            "node": "Extraction IA (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraction IA (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Structurer l'offre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structurer l'offre": {
+      "main": [
+        [
+          {
+            "node": "Dédupliquer (liens déjà vus)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dédupliquer (liens déjà vus)": {
+      "main": [
+        [
+          {
+            "node": "Enregistrer dans Notion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enregistrer dans Notion": {
+      "main": [
+        [
+          {
+            "node": "Notifier par e-mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
