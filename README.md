@@ -1,4 +1,4 @@
-# 
+
 <H1 align="center" > <b>n8n · Veille Emploi FR </b></H1>
 <p align="center"> 
   <img alt="n8n" src="https://img.shields.io/badge/n8n-workflow-EA4B71?logo=n8n&logoColor=white"/> 
@@ -39,18 +39,41 @@ Concrètement, six étapes s'enchaînent dans le workflow :
 5. **Déduplication** : les offres déjà vues (par leur lien) sont écartées.
 6. **Notion + notification** : chaque nouvelle offre est écrite dans Notion, et je reçois un mail récap.
 
-> Le diagramme détaillé est dans [`docs/schema-workflow.md`](docs/schema-workflow.md).
-
----
-
 ## Aperçu
 
 Canvas du workflow dans n8n  
 Base Notion résultante
 
-*(Les captures sont à ajouter dans `docs/screenshots/` : les emplacements attendus y sont listés.)*
+---
+<img src="docs/screenshots/01-workflow-canvas.png" alt="Workflow" width="90%" />
+
+```mermaid
+flowchart LR
+    A["📧 Gmail Trigger<br/>Alerte Emploi"] --> B["🧩 Préparer la requête<br/>(prompt + schéma JSON)"]
+    B --> C["🤖 Extraction IA<br/>API Gemini"]
+    C --> D["🧱 Structurer l'offre<br/>parse JSON"]
+    D --> E["🧹 Déduplication<br/>liens déjà vus"]
+    E --> F["🗂️ Enregistrer<br/>base Notion"]
+    F --> G["🔔 Notifier<br/>e-mail récap"]
+
+    classDef trigger fill:#1e3a5f,stroke:#4a90d9,stroke-width:2px,color:#ffffff;
+    classDef ai fill:#4a2c5e,stroke:#a86fd4,stroke-width:2px,color:#ffffff;
+    classDef process fill:#1f4d3d,stroke:#3fbf8f,stroke-width:2px,color:#ffffff;
+    classDef store fill:#5c3a1e,stroke:#d9974a,stroke-width:2px,color:#ffffff;
+
+    class A trigger;
+    class B,D,E process;
+    class C ai;
+    class F store;
+    class G trigger;
+```
+
+<img src="docs/screenshots/04-execution-success.png" alt="success" width="90%" />
+<img src="docs/screenshots/02-notion-database.png" alt="Notion" width="90%" />
 
 ---
+
+
 
 ## Stack technique
 
@@ -130,7 +153,7 @@ C'est donc une **première brique** : la plomberie (source → IA → dédup →
 Les évolutions qui rendent l'outil vraiment utile, dans l'ordre où je compte les faire :
 
 1. **Lire la vraie offre, pas juste le titre** : suivre le lien et donner le contenu réel de la page à l'IA (fini les décisions basées sur un intitulé).
-2. **Matching CV** : comparer l'offre à mes deux CV types (1. support IT / cyber / réseau-système ; 2. graphisme / UI-UX / front) et me dire : *« ton CV général suffit »* ou *« adapte tel point »*.
+2. **Matching CV** : comparer l'offre à mes deux CV types ( cyber / réseau-système ; 2. graphisme / UI-UX / front) et me dire : *« ton CV général suffit »* ou *« adapte tel point »*.
 3. **E-mail du recruteur** : quand la page de l'offre l'expose, l'extraire pour faciliter la relance.
 4. **Récap groupé** : un seul e-mail digest par jour plutôt qu'un mail par offre.
 5. **Tourner en continu** : héberger n8n (petit VPS / n8n Cloud) pour que ça marche machine éteinte.
